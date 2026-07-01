@@ -239,38 +239,36 @@ async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
 
 
 # ═══════════════════════════════════════════════
-# POLYMARKET REST — поллінг стакану кожні 2с (основна ціна)
+# POLYMARKET WEBSOCKET — реальний час через локальний стакан
 # ═══════════════════════════════════════════════
-POLY_CLOB = "https://clob.polymarket.com"
-
-async def run_polymarket_book(state: MarketState, session: aiohttp.ClientSession):
-    """Опитує REST /book кожні 2с — завжди актуальна ціна."""
-    while True:
-        try:
-            if state.up_token_id:
-                url = f"{POLY_CLOB}/book?token_id={state.up_token_id}"
-                async with session.get(url) as r:
-                    if r.status == 200:
-                        book = await r.json()
-                        bids = book.get("bids", [])
-                        asks = book.get("asks", [])
-                        if bids and asks:
-                            # bids ascending → last = best bid
-                            # asks descending → last = best ask
-                            b = float(bids[-1]["price"])
-                            a = float(asks[-1]["price"])
-                            state.up_price   = round((b + a) / 2, 3)
-                            state.down_price = round(1 - state.up_price, 3)
-        except Exception:
-            pass
-        await asyncio.sleep(2)
+def _apply_book_snapshot(bids_raw: list, asks_raw: list) -> Tuple[Dict[float,float], Dict[float,float]]:
+    """Будує локальний стакан з масиву {price, size}."""
+    bids: Dict[float, float] = {}
+    asks: Dict[float, float] = {}
+    for item in bids_raw:
+        p, s = float(item["price"]), float(item["size"])
+        if s > 0:
+            bids[p] = s
+    for item in asks_raw:
+        p, s = float(item["price"]), float(item["size"])
+        if s > 0:
+            asks[p] = s
+    return bids, asks
 
 
-# ═══════════════════════════════════════════════
-# POLYMARKET WEBSOCKET — живі ціни в реальному часі
-# ═══════════════════════════════════════════════
+def _best_mid(bids: Dict[float,float], asks: Dict[float,float]) -> Optional[float]:
+    if not bids or not asks:
+        return None
+    return round((max(bids) + min(asks)) / 2, 3)
+
+
 async def run_polymarket_ws(state: MarketState):
-    """WebSocket — живі ціни через best_bid_ask події."""
+    """
+    Підтримує локальний стакан через WS:
+      book    → початковий знімок
+      price_change → оновлення рівнів (мілісекунди)
+      best_bid_ask → швидкий апдейт кращого bid/ask
+    """
     while True:
         try:
             if not state.up_token_id:
@@ -285,10 +283,11 @@ async def run_polymarket_ws(state: MarketState):
                 })
                 await ws.send(sub)
 
-                up_bid = up_ask = dn_bid = dn_ask = None
+                # локальні стакани для UP і DOWN
+                up_bids: Dict[float, float] = {}
+                up_asks: Dict[float, float] = {}
 
                 while True:
-                    # При зміні контракту — перепідписуємось
                     if state.current_slug != slot_slug(current_slot()):
                         break
 
@@ -306,47 +305,55 @@ async def run_polymarket_ws(state: MarketState):
 
                         etype = msg.get("event_type")
                         aid   = msg.get("asset_id", "")
+                        is_up = (aid == state.up_token_id)
 
-                        if etype == "best_bid_ask":
-                            try:
-                                b = float(msg["best_bid"]) if msg.get("best_bid") is not None else None
-                                a = float(msg["best_ask"]) if msg.get("best_ask") is not None else None
-                            except Exception:
-                                continue
-                            if aid == state.up_token_id:
-                                if b is not None: up_bid = b
-                                if a is not None: up_ask = a
-                            elif aid == state.down_token_id:
-                                if b is not None: dn_bid = b
-                                if a is not None: dn_ask = a
+                        if etype == "book" or etype is None:
+                            # Повний знімок — перебудовуємо локальний стакан
+                            b, a = _apply_book_snapshot(
+                                msg.get("bids", []), msg.get("asks", [])
+                            )
+                            if is_up:
+                                up_bids, up_asks = b, a
 
-                        elif etype == "book" or etype is None:
-                            # Initial snapshot or periodic book update
-                            # bids sorted ascending → last = best bid
-                            # asks sorted descending → last = best ask
-                            bids_raw = msg.get("bids", [])
-                            asks_raw = msg.get("asks", [])
-                            if bids_raw and asks_raw:
+                        elif etype == "price_change":
+                            # Окремі рівні — оновлюємо без повного перебудування
+                            for ch in msg.get("price_changes", []):
+                                if ch.get("asset_id") != state.up_token_id:
+                                    continue
+                                p = float(ch["price"])
+                                s = float(ch.get("size", 0))
+                                side = ch.get("side", "")
+                                if side == "BUY":
+                                    if s > 0: up_bids[p] = s
+                                    else:     up_bids.pop(p, None)
+                                elif side == "SELL":
+                                    if s > 0: up_asks[p] = s
+                                    else:     up_asks.pop(p, None)
+
+                        elif etype == "best_bid_ask":
+                            # Прямий апдейт найкращого bid/ask
+                            if is_up:
                                 try:
-                                    b = float(bids_raw[-1]["price"])
-                                    a = float(asks_raw[-1]["price"])
-                                    if aid == state.up_token_id:
-                                        up_bid, up_ask = b, a
-                                    elif aid == state.down_token_id:
-                                        dn_bid, dn_ask = b, a
+                                    b = float(msg["best_bid"]) if msg.get("best_bid") else None
+                                    a = float(msg["best_ask"]) if msg.get("best_ask") else None
+                                    if b: up_bids[b] = up_bids.get(b, 1)
+                                    if a: up_asks[a] = up_asks.get(a, 1)
                                 except Exception:
                                     pass
 
-                    # Рахуємо midpoint як середнє bid/ask
-                    if up_ask is not None and up_bid is not None:
-                        state.up_price   = round((up_bid + up_ask) / 2, 3)
-                        state.down_price = round(1 - state.up_price, 3)
-                    elif up_ask is not None:
-                        state.up_price   = round(up_ask, 3)
-                        state.down_price = round(1 - up_ask, 3)
+                    mid = _best_mid(up_bids, up_asks)
+                    if mid is not None:
+                        state.up_price   = mid
+                        state.down_price = round(1 - mid, 3)
 
         except Exception:
             await asyncio.sleep(2)
+
+
+# заглушка щоб боти не падали (функція більше не потрібна але імпортується)
+async def run_polymarket_book(state: MarketState, session: aiohttp.ClientSession):
+    while True:
+        await asyncio.sleep(3600)
 
 
 # ═══════════════════════════════════════════════

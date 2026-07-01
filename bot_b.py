@@ -18,7 +18,7 @@ from rich import box
 
 from core import (
     MarketState, init_db, save_trade,
-    run_binance, run_oi, run_cvd_reset, run_polymarket, run_polymarket_ws,
+    run_binance, run_cvd, run_oi, run_cvd_reset, run_polymarket, run_polymarket_ws,
 )
 
 INITIAL_BALANCE  = 42.0
@@ -258,6 +258,7 @@ async def main():
 
             await asyncio.gather(
                 run_binance(state),
+                run_cvd(state, session),
                 run_oi(state, session),
                 run_cvd_reset(state),
                 run_polymarket(state, session),

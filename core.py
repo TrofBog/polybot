@@ -16,12 +16,9 @@ import websockets
 # ═══════════════════════════════════════════════
 # BINANCE
 # ═══════════════════════════════════════════════
-BINANCE_WS = (
-    "wss://fstream.binance.com/stream?streams="
-    "btcusdt@depth20@100ms/"
-    "btcusdt@aggTrade"
-)
-BINANCE_OI_URL = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
+BINANCE_WS        = "wss://fstream.binance.com/stream?streams=btcusdt@depth20@100ms"
+BINANCE_OI_URL    = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
+BINANCE_AGG_URL   = "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&limit=200"
 
 # ═══════════════════════════════════════════════
 # POLYMARKET
@@ -118,7 +115,7 @@ class MarketState:
 
 
 # ═══════════════════════════════════════════════
-# BINANCE WEBSOCKET
+# BINANCE WEBSOCKET — стакан (depth)
 # ═══════════════════════════════════════════════
 async def run_binance(state: MarketState):
     while True:
@@ -126,36 +123,50 @@ async def run_binance(state: MarketState):
             async with websockets.connect(BINANCE_WS, ping_interval=20) as ws:
                 state.status = "Binance ✓"
                 async for raw in ws:
-                    msg    = json.loads(raw)
-                    stream = msg.get("stream", "")
-                    data   = msg.get("data", {})
-
-                    if "depth" in stream:
-                        for b in data.get("b", []):
-                            p, s = float(b[0]), float(b[1])
-                            if s == 0:
-                                state.bids.pop(p, None)
-                            else:
-                                state.bids[p] = s
-                        for a in data.get("a", []):
-                            p, s = float(a[0]), float(a[1])
-                            if s == 0:
-                                state.asks.pop(p, None)
-                            else:
-                                state.asks[p] = s
-                        if state.bids and state.asks:
-                            state.btc_price = (max(state.bids) + min(state.asks)) / 2
-
-                    elif "aggTrade" in stream:
-                        qty = float(data.get("q", 0))
-                        if data.get("m"):
-                            state.cvd -= qty
+                    msg  = json.loads(raw)
+                    data = msg.get("data", {})
+                    for b in data.get("b", []):
+                        p, s = float(b[0]), float(b[1])
+                        if s == 0:
+                            state.bids.pop(p, None)
                         else:
-                            state.cvd += qty
-
+                            state.bids[p] = s
+                    for a in data.get("a", []):
+                        p, s = float(a[0]), float(a[1])
+                        if s == 0:
+                            state.asks.pop(p, None)
+                        else:
+                            state.asks[p] = s
+                    if state.bids and state.asks:
+                        state.btc_price = (max(state.bids) + min(state.asks)) / 2
         except Exception as e:
             state.status = f"Binance err: {e}"
             await asyncio.sleep(3)
+
+
+# ═══════════════════════════════════════════════
+# CVD через REST (aggTrades polling кожні 2с)
+# ═══════════════════════════════════════════════
+async def run_cvd(state: MarketState, session: aiohttp.ClientSession):
+    last_ts = int(time.time() * 1000)
+    while True:
+        try:
+            url = f"{BINANCE_AGG_URL}&startTime={last_ts}"
+            async with session.get(url) as r:
+                if r.status == 200:
+                    trades = await r.json()
+                    for t in trades:
+                        qty = float(t.get("q", 0))
+                        if t.get("m"):      # buyer is maker = taker sell
+                            state.cvd -= qty
+                        else:               # taker buy
+                            state.cvd += qty
+                        ts = t.get("T", last_ts)
+                        if ts > last_ts:
+                            last_ts = ts + 1
+        except Exception:
+            pass
+        await asyncio.sleep(2)
 
 
 # ═══════════════════════════════════════════════

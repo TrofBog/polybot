@@ -26,7 +26,8 @@ BINANCE_OI_URL = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
 # ═══════════════════════════════════════════════
 # POLYMARKET
 # ═══════════════════════════════════════════════
-POLY_GAMMA = "https://gamma-api.polymarket.com"
+POLY_GAMMA   = "https://gamma-api.polymarket.com"
+POLY_WS      = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 WALL_MIN_BTC = 15.0
 WALL_FAKE_SEC = 8
@@ -185,68 +186,85 @@ async def run_cvd_reset(state: MarketState):
 
 
 # ═══════════════════════════════════════════════
-# POLYMARKET POLLER
-# Автоматично знаходить поточний 5-хв контракт
-# і оновлює ціни кожні 3 секунди
+# POLYMARKET — REST (знаходить контракт і токени)
 # ═══════════════════════════════════════════════
-def _parse_prices(m: dict, up_idx: int) -> tuple:
-    """
-    Бере найточнішу ціну з доступних полів.
-    lastTradePrice > bestAsk > outcomePrices (outcomePrices оновлюється повільно).
-    """
-    last  = m.get("lastTradePrice", 0)
-    ask   = m.get("bestAsk", 0)
-    prices = json.loads(m.get("outcomePrices", "[]"))
-
-    if last and last > 0:
-        up = float(last) if up_idx == 0 else round(1 - float(last), 3)
-    elif ask and ask > 0:
-        up = float(ask) if up_idx == 0 else round(1 - float(ask), 3)
-    elif prices:
-        up = float(prices[up_idx])
-    else:
-        return 0.0, 0.0
-
-    return round(up, 3), round(1 - up, 3)
-
-
 async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
+    """Кожні 10с перевіряє чи змінився контракт і оновлює token_id."""
     while True:
         try:
             slot = current_slot()
             slug = slot_slug(slot)
 
-            url = f"{POLY_GAMMA}/events?slug={slug}"
-            async with session.get(url) as r:
-                if r.status == 200:
-                    events = await r.json()
-                    if events:
-                        ev = events[0]
-                        markets = ev.get("markets", [])
-                        if markets:
-                            m = markets[0]
-                            outcomes = json.loads(m.get("outcomes", "[]"))
-                            tokens   = json.loads(m.get("clobTokenIds", "[]"))
-                            up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
+            if slug != state.current_slug:
+                url = f"{POLY_GAMMA}/events?slug={slug}"
+                async with session.get(url) as r:
+                    if r.status == 200:
+                        events = await r.json()
+                        if events:
+                            ev = events[0]
+                            markets = ev.get("markets", [])
+                            if markets:
+                                m = markets[0]
+                                outcomes = json.loads(m.get("outcomes", "[]"))
+                                tokens   = json.loads(m.get("clobTokenIds", "[]"))
+                                up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
 
-                            up_p, dn_p = _parse_prices(m, up_idx)
-
-                            if up_p > 0:
-                                state.up_price   = up_p
-                                state.down_price = dn_p
-
-                            # Оновлюємо мета-дані тільки при зміні контракту
-                            if slug != state.current_slug:
                                 state.up_token_id   = tokens[up_idx] if tokens else ""
                                 state.down_token_id = tokens[1 - up_idx] if tokens else ""
                                 state.market_title  = ev.get("title", slug)
                                 state.market_end_ts = slot
                                 state.current_slug  = slug
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+
+
+# ═══════════════════════════════════════════════
+# POLYMARKET WEBSOCKET — живі ціни в реальному часі
+# ═══════════════════════════════════════════════
+async def run_polymarket_ws(state: MarketState):
+    """WebSocket підписка на price_changes для UP/DOWN токенів."""
+    while True:
+        try:
+            if not state.up_token_id:
+                await asyncio.sleep(2)
+                continue
+
+            async with websockets.connect(POLY_WS, ping_interval=20) as ws:
+                sub = json.dumps({
+                    "auth": {},
+                    "type": "Market",
+                    "assets_ids": [state.up_token_id, state.down_token_id]
+                })
+                await ws.send(sub)
+
+                async for raw in ws:
+                    msg = json.loads(raw)
+
+                    # Початковий знімок стакану
+                    if isinstance(msg, list):
+                        for item in msg:
+                            aid = item.get("asset_id", "")
+                            price = item.get("price", 0)
+                            if aid == state.up_token_id and price:
+                                state.up_price   = round(float(price), 3)
+                                state.down_price = round(1 - float(price), 3)
+
+                    # Оновлення цін
+                    elif "price_changes" in msg:
+                        for pc in msg["price_changes"]:
+                            aid   = pc.get("asset_id", "")
+                            price = pc.get("price", 0)
+                            if aid == state.up_token_id and price:
+                                state.up_price   = round(float(price), 3)
+                                state.down_price = round(1 - float(price), 3)
+
+                    # При зміні контракту — переписуємо
+                    if state.current_slug != slot_slug(current_slot()):
+                        break  # виходимо щоб перепідписатись на нові токени
 
         except Exception as e:
-            pass
-
-        await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
 
 # ═══════════════════════════════════════════════

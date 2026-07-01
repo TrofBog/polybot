@@ -242,51 +242,65 @@ async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
 # POLYMARKET WEBSOCKET — живі ціни в реальному часі
 # ═══════════════════════════════════════════════
 async def run_polymarket_ws(state: MarketState):
-    """WebSocket підписка на price_changes для UP/DOWN токенів."""
+    """WebSocket — живі ціни через best_bid_ask події."""
     while True:
         try:
             if not state.up_token_id:
                 await asyncio.sleep(2)
                 continue
 
-            async with websockets.connect(POLY_WS, ping_interval=20) as ws:
+            async with websockets.connect(POLY_WS, ping_interval=20, ping_timeout=20) as ws:
                 sub = json.dumps({
-                    "auth": {
-                        "apiKey":     POLY_API_KEY,
-                        "secret":     POLY_API_SECRET,
-                        "passphrase": POLY_API_PASSPHRASE,
-                    },
-                    "type": "Market",
-                    "assets_ids": [state.up_token_id, state.down_token_id]
+                    "type": "market",
+                    "assets_ids": [state.up_token_id, state.down_token_id],
+                    "custom_feature_enabled": True,
                 })
                 await ws.send(sub)
 
-                async for raw in ws:
-                    msg = json.loads(raw)
+                up_bid = up_ask = dn_bid = dn_ask = None
 
-                    # Початковий знімок стакану
-                    if isinstance(msg, list):
-                        for item in msg:
-                            aid = item.get("asset_id", "")
-                            price = item.get("price", 0)
-                            if aid == state.up_token_id and price:
-                                state.up_price   = round(float(price), 3)
-                                state.down_price = round(1 - float(price), 3)
-
-                    # Оновлення цін
-                    elif "price_changes" in msg:
-                        for pc in msg["price_changes"]:
-                            aid   = pc.get("asset_id", "")
-                            price = pc.get("price", 0)
-                            if aid == state.up_token_id and price:
-                                state.up_price   = round(float(price), 3)
-                                state.down_price = round(1 - float(price), 3)
-
-                    # При зміні контракту — переписуємо
+                while True:
+                    # При зміні контракту — перепідписуємось
                     if state.current_slug != slot_slug(current_slot()):
-                        break  # виходимо щоб перепідписатись на нові токени
+                        break
 
-        except Exception as e:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    data = json.loads(raw)
+                    msgs = data if isinstance(data, list) else [data]
+
+                    for msg in msgs:
+                        if not isinstance(msg, dict):
+                            continue
+                        if msg.get("event_type") != "best_bid_ask":
+                            continue
+
+                        aid = msg.get("asset_id", "")
+                        try:
+                            b = float(msg["best_bid"]) if msg.get("best_bid") is not None else None
+                            a = float(msg["best_ask"]) if msg.get("best_ask") is not None else None
+                        except Exception:
+                            continue
+
+                        if aid == state.up_token_id:
+                            if b is not None: up_bid = b
+                            if a is not None: up_ask = a
+                        elif aid == state.down_token_id:
+                            if b is not None: dn_bid = b
+                            if a is not None: dn_ask = a
+
+                    # Рахуємо midpoint як середнє bid/ask
+                    if up_ask is not None and up_bid is not None:
+                        state.up_price   = round((up_bid + up_ask) / 2, 3)
+                        state.down_price = round(1 - state.up_price, 3)
+                    elif up_ask is not None:
+                        state.up_price   = round(up_ask, 3)
+                        state.down_price = round(1 - up_ask, 3)
+
+        except Exception:
             await asyncio.sleep(2)
 
 

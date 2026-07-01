@@ -19,7 +19,8 @@ from rich import box
 
 from core import (
     MarketState, init_db, save_trade,
-    run_binance, run_cvd, run_oi, run_cvd_reset, run_polymarket, run_polymarket_ws,
+    run_binance, run_cvd, run_oi, run_cvd_reset,
+    run_polymarket, run_polymarket_ws, run_polymarket_book,
 )
 
 INITIAL_BALANCE  = 42.0
@@ -225,6 +226,7 @@ async def main():
                 run_oi(state, session),
                 run_cvd_reset(state),
                 run_polymarket(state, session),
+                run_polymarket_book(state, session),
                 run_polymarket_ws(state),
                 trading_loop(state, acc, db),
                 refresh(),

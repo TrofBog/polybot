@@ -239,6 +239,34 @@ async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
 
 
 # ═══════════════════════════════════════════════
+# POLYMARKET REST — поллінг стакану кожні 2с (основна ціна)
+# ═══════════════════════════════════════════════
+POLY_CLOB = "https://clob.polymarket.com"
+
+async def run_polymarket_book(state: MarketState, session: aiohttp.ClientSession):
+    """Опитує REST /book кожні 2с — завжди актуальна ціна."""
+    while True:
+        try:
+            if state.up_token_id:
+                url = f"{POLY_CLOB}/book?token_id={state.up_token_id}"
+                async with session.get(url) as r:
+                    if r.status == 200:
+                        book = await r.json()
+                        bids = book.get("bids", [])
+                        asks = book.get("asks", [])
+                        if bids and asks:
+                            # bids ascending → last = best bid
+                            # asks descending → last = best ask
+                            b = float(bids[-1]["price"])
+                            a = float(asks[-1]["price"])
+                            state.up_price   = round((b + a) / 2, 3)
+                            state.down_price = round(1 - state.up_price, 3)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+
+# ═══════════════════════════════════════════════
 # POLYMARKET WEBSOCKET — живі ціни в реальному часі
 # ═══════════════════════════════════════════════
 async def run_polymarket_ws(state: MarketState):

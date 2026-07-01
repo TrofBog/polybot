@@ -275,22 +275,39 @@ async def run_polymarket_ws(state: MarketState):
                     for msg in msgs:
                         if not isinstance(msg, dict):
                             continue
-                        if msg.get("event_type") != "best_bid_ask":
-                            continue
 
-                        aid = msg.get("asset_id", "")
-                        try:
-                            b = float(msg["best_bid"]) if msg.get("best_bid") is not None else None
-                            a = float(msg["best_ask"]) if msg.get("best_ask") is not None else None
-                        except Exception:
-                            continue
+                        etype = msg.get("event_type")
+                        aid   = msg.get("asset_id", "")
 
-                        if aid == state.up_token_id:
-                            if b is not None: up_bid = b
-                            if a is not None: up_ask = a
-                        elif aid == state.down_token_id:
-                            if b is not None: dn_bid = b
-                            if a is not None: dn_ask = a
+                        if etype == "best_bid_ask":
+                            try:
+                                b = float(msg["best_bid"]) if msg.get("best_bid") is not None else None
+                                a = float(msg["best_ask"]) if msg.get("best_ask") is not None else None
+                            except Exception:
+                                continue
+                            if aid == state.up_token_id:
+                                if b is not None: up_bid = b
+                                if a is not None: up_ask = a
+                            elif aid == state.down_token_id:
+                                if b is not None: dn_bid = b
+                                if a is not None: dn_ask = a
+
+                        elif etype == "book" or etype is None:
+                            # Initial snapshot or periodic book update
+                            # bids sorted ascending → last = best bid
+                            # asks sorted descending → last = best ask
+                            bids_raw = msg.get("bids", [])
+                            asks_raw = msg.get("asks", [])
+                            if bids_raw and asks_raw:
+                                try:
+                                    b = float(bids_raw[-1]["price"])
+                                    a = float(asks_raw[-1]["price"])
+                                    if aid == state.up_token_id:
+                                        up_bid, up_ask = b, a
+                                    elif aid == state.down_token_id:
+                                        dn_bid, dn_ask = b, a
+                                except Exception:
+                                    pass
 
                     # Рахуємо midpoint як середнє bid/ask
                     if up_ask is not None and up_bid is not None:

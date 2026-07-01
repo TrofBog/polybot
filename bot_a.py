@@ -68,7 +68,7 @@ class Account:
         if not self.open:
             return 0.0
         pnl = save_trade(db, self.open, exit_price, outcome)
-        self.balance   += STAKE + pnl
+        self.balance   += self.open["stake"] + pnl
         self.total_pnl += pnl
         if pnl > 0:
             self.wins += 1

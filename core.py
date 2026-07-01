@@ -189,54 +189,59 @@ async def run_cvd_reset(state: MarketState):
 # Автоматично знаходить поточний 5-хв контракт
 # і оновлює ціни кожні 3 секунди
 # ═══════════════════════════════════════════════
+def _parse_prices(m: dict, up_idx: int) -> tuple:
+    """
+    Бере найточнішу ціну з доступних полів.
+    lastTradePrice > bestAsk > outcomePrices (outcomePrices оновлюється повільно).
+    """
+    last  = m.get("lastTradePrice", 0)
+    ask   = m.get("bestAsk", 0)
+    prices = json.loads(m.get("outcomePrices", "[]"))
+
+    if last and last > 0:
+        up = float(last) if up_idx == 0 else round(1 - float(last), 3)
+    elif ask and ask > 0:
+        up = float(ask) if up_idx == 0 else round(1 - float(ask), 3)
+    elif prices:
+        up = float(prices[up_idx])
+    else:
+        return 0.0, 0.0
+
+    return round(up, 3), round(1 - up, 3)
+
+
 async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
     while True:
         try:
             slot = current_slot()
             slug = slot_slug(slot)
 
-            # Якщо ринок змінився — завантажуємо новий
-            if slug != state.current_slug:
-                url = f"{POLY_GAMMA}/events?slug={slug}"
-                async with session.get(url) as r:
-                    if r.status == 200:
-                        events = await r.json()
-                        if events:
-                            ev = events[0]
-                            markets = ev.get("markets", [])
-                            if markets:
-                                m = markets[0]
-                                outcomes = json.loads(m.get("outcomes", "[]"))
-                                prices   = json.loads(m.get("outcomePrices", "[]"))
-                                tokens   = json.loads(m.get("clobTokenIds", "[]"))
+            url = f"{POLY_GAMMA}/events?slug={slug}"
+            async with session.get(url) as r:
+                if r.status == 200:
+                    events = await r.json()
+                    if events:
+                        ev = events[0]
+                        markets = ev.get("markets", [])
+                        if markets:
+                            m = markets[0]
+                            outcomes = json.loads(m.get("outcomes", "[]"))
+                            tokens   = json.loads(m.get("clobTokenIds", "[]"))
+                            up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
 
-                                # outcomes[0] = "Up", outcomes[1] = "Down"
-                                up_idx = 0 if outcomes and outcomes[0].lower() == "up" else 1
+                            up_p, dn_p = _parse_prices(m, up_idx)
 
-                                state.up_price    = float(prices[up_idx]) if prices else 0.0
-                                state.down_price  = float(prices[1 - up_idx]) if prices else 0.0
+                            if up_p > 0:
+                                state.up_price   = up_p
+                                state.down_price = dn_p
+
+                            # Оновлюємо мета-дані тільки при зміні контракту
+                            if slug != state.current_slug:
                                 state.up_token_id   = tokens[up_idx] if tokens else ""
                                 state.down_token_id = tokens[1 - up_idx] if tokens else ""
                                 state.market_title  = ev.get("title", slug)
                                 state.market_end_ts = slot
                                 state.current_slug  = slug
-                        else:
-                            pass  # ринок ще не створений
-
-            else:
-                # Оновлюємо тільки ціни для поточного ринку
-                url = f"{POLY_GAMMA}/events?slug={slug}"
-                async with session.get(url) as r:
-                    if r.status == 200:
-                        events = await r.json()
-                        if events:
-                            m = events[0].get("markets", [{}])[0]
-                            outcomes = json.loads(m.get("outcomes", "[]"))
-                            prices   = json.loads(m.get("outcomePrices", "[]"))
-                            if prices and outcomes:
-                                up_idx = 0 if outcomes[0].lower() == "up" else 1
-                                state.up_price   = float(prices[up_idx])
-                                state.down_price = float(prices[1 - up_idx])
 
         except Exception as e:
             pass

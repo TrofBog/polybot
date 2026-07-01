@@ -14,6 +14,14 @@ import aiohttp
 import websockets
 
 # ═══════════════════════════════════════════════
+# POLYMARKET API CREDENTIALS
+# ═══════════════════════════════════════════════
+POLY_API_KEY        = "98579c51-db9f-b12a-6fa7-9635b39c9088"
+POLY_API_SECRET     = "MxmT2utzi7afGyc-bODjHV0xqqYAPDX6onuVyJxUNKU="
+POLY_API_PASSPHRASE = "0b45c8d7e8120c28307e0e6a258b54c52e7d8f009c67038028bcc63d711db185"
+POLY_PRIVATE_KEY    = "0x9e438d5eaf4f230ebdddc2344b46748739cabe3856b6f20e20e50150f2c1d713"
+
+# ═══════════════════════════════════════════════
 # BINANCE
 # ═══════════════════════════════════════════════
 BINANCE_WS        = "wss://fstream.binance.com/stream?streams=btcusdt@depth20@100ms"
@@ -243,7 +251,11 @@ async def run_polymarket_ws(state: MarketState):
 
             async with websockets.connect(POLY_WS, ping_interval=20) as ws:
                 sub = json.dumps({
-                    "auth": {},
+                    "auth": {
+                        "apiKey":     POLY_API_KEY,
+                        "secret":     POLY_API_SECRET,
+                        "passphrase": POLY_API_PASSPHRASE,
+                    },
                     "type": "Market",
                     "assets_ids": [state.up_token_id, state.down_token_id]
                 })

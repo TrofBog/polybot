@@ -211,28 +211,36 @@ async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
     """Кожні 10с перевіряє чи змінився контракт і оновлює token_id."""
     while True:
         try:
-            slot = current_slot()
-            slug = slot_slug(slot)
-
-            if slug != state.current_slug:
+            # Перевіряємо поточний слот, і якщо не знайдено — попередній
+            # (новий контракт може з'явитись із затримкою до 60с після початку)
+            for slot in [current_slot(), current_slot() - 300]:
+                slug = slot_slug(slot)
+                if slug == state.current_slug:
+                    break  # вже підписані на цей слот
                 url = f"{POLY_GAMMA}/events?slug={slug}"
                 async with session.get(url) as r:
-                    if r.status == 200:
-                        events = await r.json()
-                        if events:
-                            ev = events[0]
-                            markets = ev.get("markets", [])
-                            if markets:
-                                m = markets[0]
-                                outcomes = json.loads(m.get("outcomes", "[]"))
-                                tokens   = json.loads(m.get("clobTokenIds", "[]"))
-                                up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
+                    if r.status != 200:
+                        continue
+                    events = await r.json()
+                    if not events:
+                        continue
+                    ev = events[0]
+                    markets = ev.get("markets", [])
+                    if not markets:
+                        continue
+                    m = markets[0]
+                    if m.get("closed"):
+                        continue  # закритий — шукаємо далі
+                    outcomes = json.loads(m.get("outcomes", "[]"))
+                    tokens   = json.loads(m.get("clobTokenIds", "[]"))
+                    up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
 
-                                state.up_token_id   = tokens[up_idx] if tokens else ""
-                                state.down_token_id = tokens[1 - up_idx] if tokens else ""
-                                state.market_title  = ev.get("title", slug)
-                                state.market_end_ts = slot
-                                state.current_slug  = slug
+                    state.up_token_id   = tokens[up_idx] if tokens else ""
+                    state.down_token_id = tokens[1 - up_idx] if tokens else ""
+                    state.market_title  = ev.get("title", slug)
+                    state.market_end_ts = slot
+                    state.current_slug  = slug
+                    break  # знайшли — виходимо
         except Exception:
             pass
         await asyncio.sleep(10)

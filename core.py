@@ -208,39 +208,42 @@ async def run_cvd_reset(state: MarketState):
 # POLYMARKET — REST (знаходить контракт і токени)
 # ═══════════════════════════════════════════════
 async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
-    """Кожні 10с перевіряє чи змінився контракт і оновлює token_id."""
+    """Кожні 10с знаходить поточний btc-updown-5m контракт по slug."""
     while True:
         try:
-            # Перевіряємо поточний слот, і якщо не знайдено — попередній
-            # (новий контракт може з'явитись із затримкою до 60с після початку)
-            for slot in [current_slot(), current_slot() - 300]:
-                slug = slot_slug(slot)
-                if slug == state.current_slug:
-                    break  # вже підписані на цей слот
-                url = f"{POLY_GAMMA}/events?slug={slug}"
-                async with session.get(url) as r:
-                    if r.status != 200:
-                        continue
-                    events = await r.json()
-                    if not events:
-                        continue
-                    ev = events[0]
-                    markets = ev.get("markets", [])
-                    if not markets:
-                        continue
-                    m = markets[0]
-                    if m.get("closed"):
-                        continue  # закритий — шукаємо далі
-                    outcomes = json.loads(m.get("outcomes", "[]"))
-                    tokens   = json.loads(m.get("clobTokenIds", "[]"))
-                    up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
+            slug = slot_slug(current_slot())
+            if slug == state.current_slug:
+                await asyncio.sleep(10)
+                continue
 
-                    state.up_token_id   = tokens[up_idx] if tokens else ""
-                    state.down_token_id = tokens[1 - up_idx] if tokens else ""
-                    state.market_title  = ev.get("title", slug)
-                    state.market_end_ts = slot
-                    state.current_slug  = slug
-                    break  # знайшли — виходимо
+            url = f"{POLY_GAMMA}/events?slug={slug}"
+            async with session.get(url) as r:
+                if r.status != 200:
+                    await asyncio.sleep(10)
+                    continue
+                events = await r.json()
+
+            if not events:
+                await asyncio.sleep(10)
+                continue
+
+            ev = events[0]
+            markets = ev.get("markets", [])
+            if not markets:
+                await asyncio.sleep(10)
+                continue
+
+            m = markets[0]
+            outcomes = json.loads(m.get("outcomes", "[]"))
+            tokens   = json.loads(m.get("clobTokenIds", "[]"))
+            up_idx   = 0 if outcomes and outcomes[0].lower() == "up" else 1
+
+            state.up_token_id   = tokens[up_idx] if tokens else ""
+            state.down_token_id = tokens[1 - up_idx] if tokens else ""
+            state.market_title  = ev.get("title", slug)
+            state.market_end_ts = current_slot()
+            state.current_slug  = slug
+
         except Exception:
             pass
         await asyncio.sleep(10)

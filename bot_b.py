@@ -21,12 +21,15 @@ from core import (
     run_binance, run_oi, run_cvd_reset, run_polymarket,
 )
 
-INITIAL_BALANCE = 42.0
-STAKE_PCT       = 0.08   # 8% від поточного балансу
-LIMIT_OFFSET    = 0.03
-TAKE_PROFIT     = 0.87
-CVD_MIN_DELTA   = 50.0
-DB_PATH         = "trades_b.db"
+INITIAL_BALANCE  = 42.0
+STAKE_PCT        = 0.08
+LIMIT_OFFSET     = 0.03
+TAKE_PROFIT      = 0.87
+CVD_MIN_DELTA    = 50.0
+MIN_UP_PRICE     = 0.75   # не входимо якщо ціна нижче 0.75
+ENTRY_SEC_MIN    = 90     # вікно входу: 90-150с до кінця
+ENTRY_SEC_MAX    = 150
+DB_PATH          = "trades_b.db"
 
 console = Console()
 
@@ -100,7 +103,11 @@ def get_signal(state: MarketState, acc: Account):
     if not (0.35 <= limit <= 0.72):
         return None
 
-    if state.up_price > limit + 0.005:
+    secs = state.seconds_left()
+    if not (ENTRY_SEC_MIN <= secs <= ENTRY_SEC_MAX):
+        return None
+
+    if state.up_price < MIN_UP_PRICE:
         return None
 
     cvd_d = state.cvd_delta()

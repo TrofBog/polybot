@@ -22,11 +22,14 @@ from core import (
     run_binance, run_oi, run_cvd_reset, run_polymarket,
 )
 
-INITIAL_BALANCE = 42.0
-STAKE_PCT       = 0.08   # 8% від поточного балансу
-LIMIT_OFFSET    = 0.03
-TAKE_PROFIT     = 0.87
-DB_PATH         = "trades_a.db"
+INITIAL_BALANCE  = 42.0
+STAKE_PCT        = 0.08   # 8% від поточного балансу
+LIMIT_OFFSET     = 0.03   # купуємо на 3¢ нижче поточної ціни
+TAKE_PROFIT      = 0.87
+MIN_UP_PRICE     = 0.75   # не входимо якщо ціна нижче 0.75 (ринок невпевнений)
+ENTRY_SEC_MIN    = 90     # входимо не раніше ніж за 90с до кінця
+ENTRY_SEC_MAX    = 150    # і не пізніше ніж за 90с (вікно: 90-150с)
+DB_PATH          = "trades_a.db"
 
 console = Console()
 
@@ -86,20 +89,27 @@ class Account:
 # СТРАТЕГІЯ A
 # ═══════════════════════════════════════════════
 def get_signal(state: MarketState, acc: Account) -> Optional[float]:
-    """Повертає ціну входу або None."""
+    """
+    Входимо тільки коли:
+    - залишилось 90-150 секунд до кінця контракту
+    - ціна UP вже висока (>= 0.75) — ринок впевнений
+    - ставимо ліміт на 3¢ нижче поточної ціни
+    """
     if acc.open or state.up_price <= 0:
         return None
 
-    limit = round(state.up_price - LIMIT_OFFSET, 3)
+    secs = state.seconds_left()
 
-    if not (0.35 <= limit <= 0.72):
+    # Тільки у вікні 90-150 секунд до кінця
+    if not (ENTRY_SEC_MIN <= secs <= ENTRY_SEC_MAX):
         return None
 
-    # Ціна просіла до нашого ліміту
-    if state.up_price <= limit + 0.005:
-        return limit
+    # Ціна має бути висока — ринок впевнений що UP
+    if state.up_price < MIN_UP_PRICE:
+        return None
 
-    return None
+    limit = round(state.up_price - LIMIT_OFFSET, 3)
+    return limit
 
 
 # ═══════════════════════════════════════════════

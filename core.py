@@ -42,9 +42,9 @@ WALL_FAKE_SEC = 8
 # РИНОК — ПОШУК ПОТОЧНОГО СЛОТУ
 # ═══════════════════════════════════════════════
 def current_slot() -> int:
-    """Unix timestamp кінця поточного 5-хвилинного слоту."""
+    """Unix timestamp початку поточного 5-хвилинного слоту (= slug)."""
     now = int(time.time())
-    return ((now // 300) + 1) * 300
+    return (now // 300) * 300
 
 
 def slot_slug(ts: int) -> str:
@@ -241,7 +241,7 @@ async def run_polymarket(state: MarketState, session: aiohttp.ClientSession):
             state.up_token_id   = tokens[up_idx] if tokens else ""
             state.down_token_id = tokens[1 - up_idx] if tokens else ""
             state.market_title  = ev.get("title", slug)
-            state.market_end_ts = current_slot()
+            state.market_end_ts = current_slot() + 300  # кінець = початок + 5хв
             state.current_slug  = slug
 
         except Exception:
